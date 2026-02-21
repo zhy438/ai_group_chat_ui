@@ -25,6 +25,10 @@ export const apiClient = {
   getMessages: (groupId, limit = 200) => api.get(`/groups/${groupId}/messages`, { params: { limit } }),
   getContextStats: (groupId) => api.get(`/groups/${groupId}/context/stats`),
   setThreshold: (groupId, payload) => api.put(`/groups/${groupId}/compression/threshold`, payload),
+
+  getMemorySettings: (groupId) => api.get(`/groups/${groupId}/memory/settings`),
+  updateMemorySettings: (groupId, payload) => api.put(`/groups/${groupId}/memory/settings`, payload),
+  getMemoryStats: (groupId) => api.get(`/groups/${groupId}/memory/stats`),
 }
 
 export const apiBase = API_BASE

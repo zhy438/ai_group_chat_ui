@@ -55,13 +55,17 @@
               v-for="block in renderedMessageBlocks"
               :key="block.id"
             >
-              <div v-if="block.type === 'chat'" class="message-row" :class="{ me: isMe(block.message) }">
-                <div class="avatar" :class="{ me: isMe(block.message) }">
+              <div
+                v-if="block.type === 'chat'"
+                class="message-row"
+                :class="[messageToneClass(block.message), { me: isMe(block.message) }]"
+              >
+                <div class="avatar" :class="[messageToneClass(block.message), { me: isMe(block.message) }]">
                   {{ avatarLabel(block.message.sender_name, block.message.role) }}
                 </div>
 
                 <div class="message-stack">
-                  <div class="sender-line" :class="{ me: isMe(block.message) }">
+                  <div class="sender-line" :class="[messageToneClass(block.message), { me: isMe(block.message) }]">
                     <span class="sender-name">{{ senderName(block.message) }}</span>
                     <span class="sender-id">{{ senderId(block.message) }}</span>
                     <el-tag size="small" :type="block.message.mode === 'qa' ? 'success' : 'warning'">
@@ -69,8 +73,8 @@
                     </el-tag>
                   </div>
 
-                  <div class="bubble" :class="{ me: isMe(block.message) }">
-                    {{ block.message.content }}
+                  <div class="bubble" :class="[messageToneClass(block.message), { me: isMe(block.message) }]">
+                    <div class="markdown-body" v-html="renderMarkdown(block.message.content)"></div>
                   </div>
                 </div>
               </div>
@@ -106,7 +110,8 @@
                       </div>
                     </header>
                     <div class="qa-card-body">
-                      {{ card.pending ? '思考中...' : card.content }}
+                      <span v-if="card.pending">思考中...</span>
+                      <div v-else class="markdown-body" v-html="renderMarkdown(card.content)"></div>
                     </div>
                   </article>
                 </div>
@@ -119,7 +124,10 @@
           <section class="composer-panel" :style="{ height: `${composerHeight}px` }">
             <el-form inline class="composer-form">
               <el-form-item label="昵称">
-                <el-input v-model="userName" style="width: 140px" />
+                <el-input v-model="userName" style="width: 120px" />
+              </el-form-item>
+              <el-form-item label="用户ID">
+                <el-input v-model="userId" style="width: 150px" />
               </el-form-item>
               <el-form-item label="轮数">
                 <el-input-number v-model="maxRounds" :min="1" :max="10" />
@@ -197,6 +205,63 @@
               <span>消息数</span>
               <strong>{{ stats.message_count || 0 }}</strong>
             </div>
+
+            <div class="panel-title line memory-title">
+              <span>长期记忆</span>
+              <el-button link @click="refreshMemory">刷新</el-button>
+            </div>
+            <div class="stats-line compact">
+              <span>记录数 / 死信</span>
+              <strong>{{ memoryStats.total_records || 0 }} / {{ memoryStats.dead_letter_count || 0 }}</strong>
+            </div>
+
+            <div class="memory-grid">
+              <div class="memory-item">
+                <span>总开关</span>
+                <el-switch v-model="memorySettings.memory_enabled" @change="saveMemorySettings" />
+              </div>
+              <div class="memory-item">
+                <span>归档</span>
+                <el-switch v-model="memorySettings.archive_enabled" @change="saveMemorySettings" />
+              </div>
+              <div class="memory-item">
+                <span>检索</span>
+                <el-switch v-model="memorySettings.retrieve_enabled" @change="saveMemorySettings" />
+              </div>
+              <div class="memory-item">
+                <span>User跨群</span>
+                <el-switch v-model="memorySettings.scope_user_global" @change="saveMemorySettings" />
+              </div>
+              <div class="memory-item">
+                <span>Group群内</span>
+                <el-switch v-model="memorySettings.scope_group_local" @change="saveMemorySettings" />
+              </div>
+              <div class="memory-item">
+                <span>Agent群内</span>
+                <el-switch v-model="memorySettings.scope_agent_local" @change="saveMemorySettings" />
+              </div>
+            </div>
+
+            <div class="stats-line compact">
+              <span>注入占比（{{ Math.round((memorySettings.memory_injection_ratio || 0) * 100) }}%）</span>
+              <el-slider
+                v-model="memorySettings.memory_injection_ratio"
+                :min="0.05"
+                :max="0.5"
+                :step="0.05"
+                @change="saveMemorySettings"
+              />
+            </div>
+            <div class="stats-line compact">
+              <span>TopN（{{ memorySettings.memory_top_n || 5 }}）</span>
+              <el-slider
+                v-model="memorySettings.memory_top_n"
+                :min="1"
+                :max="10"
+                :step="1"
+                @change="saveMemorySettings"
+              />
+            </div>
           </section>
         </aside>
       </main>
@@ -229,7 +294,7 @@
           />
         </el-select>
       </el-form-item>
-      <el-form-item label="描述"><el-input v-model="memberForm.description" type="textarea" :rows="2" /></el-form-item>
+      <el-form-item label="专属人设"><el-input v-model="memberForm.description" type="textarea" :rows="3" placeholder="例如：你是严谨的架构师，回答先给结论再给理由，必要时给出风险清单。" /></el-form-item>
       <el-form-item label="温度"><el-slider v-model="memberForm.temperature" :min="0" :max="2" :step="0.1" /></el-form-item>
       <el-form-item label="Thinking"><el-switch v-model="memberForm.thinking" /></el-form-item>
     </el-form>
@@ -267,6 +332,19 @@ const currentGroup = ref(null)
 const messageList = ref([])
 const stats = ref({})
 const threshold = ref(0.8)
+const memoryStats = ref({})
+const memorySettings = ref({
+  memory_enabled: true,
+  archive_enabled: true,
+  retrieve_enabled: true,
+  scope_user_global: true,
+  scope_group_local: true,
+  scope_agent_local: true,
+  memory_injection_ratio: 0.2,
+  memory_top_n: 5,
+  memory_min_confidence: 0.75,
+  memory_score_threshold: 0.35,
+})
 
 const createDialog = ref(false)
 const memberDialog = ref(false)
@@ -275,6 +353,7 @@ const managerDialog = ref(false)
 const newGroupName = ref('')
 const question = ref('')
 const userName = ref('用户')
+const userId = ref('default-user')
 const maxRounds = ref(2)
 const mode = ref('free')
 const modeOptions = [
@@ -427,6 +506,243 @@ function senderId(msg) {
 function senderIdByName(name) {
   return `@${name || 'assistant'}`
 }
+function messageToneClass(msg) {
+  if (!msg) return 'tone-member'
+  if (msg.role === 'system' || msg.sender_name === '系统') return 'tone-system'
+  if (msg.sender_name === '总结助手') return 'tone-summary'
+  if (msg.role === 'user') return 'tone-user'
+  return 'tone-member'
+}
+
+function escapeHtml(input) {
+  return String(input ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeHtmlAttr(input) {
+  return escapeHtml(input).replace(/`/g, '&#96;')
+}
+
+function renderInlineMarkdown(line) {
+  const source = String(line ?? '')
+  const tokens = []
+  let staged = source.replace(/`([^`\n]+)`/g, (_, code) => {
+    const token = '__MD_TOKEN_' + tokens.length + '__'
+    tokens.push({ type: 'code', code })
+    return token
+  })
+
+  staged = staged.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => {
+    const token = '__MD_TOKEN_' + tokens.length + '__'
+    tokens.push({ type: 'link', label, href })
+    return token
+  })
+
+  let html = escapeHtml(staged)
+  html = html.replace(/&lt;br\s*\/?&gt;/gi, '<br />')
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+  html = html.replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+
+  html = html.replace(/__MD_TOKEN_(\d+)__/g, (_, idx) => {
+    const token = tokens[Number(idx)]
+    if (!token) return ''
+    if (token.type === 'code') {
+      return '<code>' + escapeHtml(token.code) + '</code>'
+    }
+    return '<a href="' + escapeHtmlAttr(token.href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(token.label) + '</a>'
+  })
+
+  return html
+}
+
+function splitTableCells(line) {
+  const raw = String(line ?? '').trim()
+  if (!raw.includes('|')) return null
+
+  let normalized = raw
+  if (normalized.startsWith('|')) normalized = normalized.slice(1)
+  if (normalized.endsWith('|')) normalized = normalized.slice(0, -1)
+
+  const cells = normalized.split('|').map((cell) => cell.trim())
+  if (cells.length < 2) return null
+  return cells
+}
+
+function isTableSeparator(line) {
+  const cells = splitTableCells(line)
+  if (!cells) return false
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
+function renderMarkdown(content) {
+  const source = String(content ?? '').replace(/\r\n?/g, '\n')
+  if (!source.trim()) return ''
+
+  const lines = source.split('\n')
+  const blocks = []
+  let paragraph = []
+  let listType = null
+  let listItems = []
+  let quoteLines = []
+  let inCode = false
+  let codeLang = ''
+  let codeLines = []
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return
+    const body = paragraph.map((line) => renderInlineMarkdown(line)).join('<br />')
+    blocks.push('<p>' + body + '</p>')
+    paragraph = []
+  }
+
+  const flushList = () => {
+    if (!listType || !listItems.length) return
+    const tag = listType
+    const items = listItems.map((item) => '<li>' + renderInlineMarkdown(item) + '</li>').join('')
+    blocks.push('<' + tag + '>' + items + '</' + tag + '>')
+    listType = null
+    listItems = []
+  }
+
+  const flushQuote = () => {
+    if (!quoteLines.length) return
+    const body = quoteLines.map((line) => renderInlineMarkdown(line)).join('<br />')
+    blocks.push('<blockquote>' + body + '</blockquote>')
+    quoteLines = []
+  }
+
+  const flushCode = () => {
+    const langClass = codeLang ? ' class="language-' + escapeHtmlAttr(codeLang) + '"' : ''
+    blocks.push('<pre><code' + langClass + '>' + escapeHtml(codeLines.join('\n')) + '</code></pre>')
+    inCode = false
+    codeLang = ''
+    codeLines = []
+  }
+
+  const renderTable = (headerCells, bodyRows) => {
+    const width = headerCells.length
+    const normalizeRow = (cells) => {
+      const row = cells.slice(0, width)
+      while (row.length < width) row.push('')
+      return row
+    }
+
+    const headerHtml = '<tr>' + normalizeRow(headerCells).map((cell) => '<th>' + renderInlineMarkdown(cell) + '</th>').join('') + '</tr>'
+    const bodyHtml = bodyRows
+      .map((cells) => '<tr>' + normalizeRow(cells).map((cell) => '<td>' + renderInlineMarkdown(cell) + '</td>').join('') + '</tr>')
+      .join('')
+
+    blocks.push('<table><thead>' + headerHtml + '</thead><tbody>' + bodyHtml + '</tbody></table>')
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+
+    const fence = line.match(/^```([a-zA-Z0-9_-]+)?\s*$/)
+    if (fence) {
+      flushParagraph()
+      flushList()
+      flushQuote()
+      if (inCode) {
+        flushCode()
+      } else {
+        inCode = true
+        codeLang = fence[1] || ''
+        codeLines = []
+      }
+      continue
+    }
+
+    if (inCode) {
+      codeLines.push(line)
+      continue
+    }
+
+    const maybeHeader = splitTableCells(line)
+    const nextLine = i + 1 < lines.length ? lines[i + 1] : ''
+    if (maybeHeader && isTableSeparator(nextLine)) {
+      flushParagraph()
+      flushList()
+      flushQuote()
+
+      const rows = []
+      i += 1
+      while (i + 1 < lines.length) {
+        const candidate = lines[i + 1]
+        const cells = splitTableCells(candidate)
+        if (!cells || !candidate.trim() || isTableSeparator(candidate)) break
+        rows.push(cells)
+        i += 1
+      }
+
+      renderTable(maybeHeader, rows)
+      continue
+    }
+
+    if (!line.trim()) {
+      flushParagraph()
+      flushList()
+      flushQuote()
+      continue
+    }
+
+    const quoteMatch = line.match(/^>\s?(.*)$/)
+    if (quoteMatch) {
+      flushParagraph()
+      flushList()
+      quoteLines.push(quoteMatch[1])
+      continue
+    }
+    flushQuote()
+
+    const ulMatch = line.match(/^\s*[-*+]\s+(.+)$/)
+    if (ulMatch) {
+      flushParagraph()
+      if (listType && listType !== 'ul') flushList()
+      listType = 'ul'
+      listItems.push(ulMatch[1])
+      continue
+    }
+
+    const olMatch = line.match(/^\s*\d+\.\s+(.+)$/)
+    if (olMatch) {
+      flushParagraph()
+      if (listType && listType !== 'ol') flushList()
+      listType = 'ol'
+      listItems.push(olMatch[1])
+      continue
+    }
+    flushList()
+
+    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      flushParagraph()
+      blocks.push('<hr />')
+      continue
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
+    if (headingMatch) {
+      flushParagraph()
+      const level = headingMatch[1].length
+      blocks.push('<h' + level + '>' + renderInlineMarkdown(headingMatch[2]) + '</h' + level + '>')
+      continue
+    }
+
+    paragraph.push(line)
+  }
+
+  if (inCode) flushCode()
+  flushParagraph()
+  flushList()
+  flushQuote()
+
+  return blocks.join('')
+}
 
 function avatarLabel(name, role) {
   if (role === 'user') return (name || userName.value || 'U').slice(0, 1).toUpperCase()
@@ -436,6 +752,9 @@ function avatarLabel(name, role) {
 function applyRealtimeStats(payload) {
   if (!payload) return
   stats.value = payload
+  if (payload.memory_stats) {
+    memoryStats.value = payload.memory_stats
+  }
   if (payload.compression_config?.threshold_ratio !== undefined) {
     threshold.value = payload.compression_config.threshold_ratio
     if (currentGroup.value) {
@@ -509,8 +828,21 @@ async function selectGroup(groupId) {
   managerForm.value.thinking = !!group.manager_thinking
   managerForm.value.temperature = group.manager_temperature ?? 0.7
   threshold.value = group.compression_threshold ?? 0.8
+  memorySettings.value = {
+    ...memorySettings.value,
+    memory_enabled: group.memory_enabled ?? true,
+    archive_enabled: group.archive_enabled ?? true,
+    retrieve_enabled: group.retrieve_enabled ?? true,
+    scope_user_global: group.scope_user_global ?? true,
+    scope_group_local: group.scope_group_local ?? true,
+    scope_agent_local: group.scope_agent_local ?? true,
+    memory_injection_ratio: group.memory_injection_ratio ?? 0.2,
+    memory_top_n: group.memory_top_n ?? 5,
+    memory_min_confidence: group.memory_min_confidence ?? 0.75,
+    memory_score_threshold: group.memory_score_threshold ?? 0.35,
+  }
 
-  await loadContextStats()
+  await Promise.all([loadContextStats(), loadMemorySettings(), loadMemoryStats()])
   await scrollBottom()
 }
 
@@ -592,6 +924,46 @@ async function loadContextStats() {
   if (!currentGroup.value) return
   const { data } = await apiClient.getContextStats(currentGroup.value.id)
   stats.value = data
+  if (data.memory_stats) {
+    memoryStats.value = data.memory_stats
+  }
+}
+
+async function loadMemorySettings() {
+  if (!currentGroup.value) return
+  const { data } = await apiClient.getMemorySettings(currentGroup.value.id)
+  memorySettings.value = {
+    ...memorySettings.value,
+    ...data,
+  }
+}
+
+async function loadMemoryStats() {
+  if (!currentGroup.value) return
+  const { data } = await apiClient.getMemoryStats(currentGroup.value.id)
+  memoryStats.value = data
+}
+
+async function saveMemorySettings() {
+  if (!currentGroup.value) return
+  const payload = {
+    ...memorySettings.value,
+  }
+  try {
+    await apiClient.updateMemorySettings(currentGroup.value.id, payload)
+    currentGroup.value = {
+      ...currentGroup.value,
+      ...payload,
+    }
+    syncGroupInSidebar(currentGroup.value)
+    await loadMemoryStats()
+  } catch (err) {
+    ElMessage.error(err?.message || '长期记忆配置保存失败')
+  }
+}
+
+async function refreshMemory() {
+  await Promise.all([loadMemorySettings(), loadMemoryStats()])
 }
 
 async function updateThreshold(value) {
@@ -631,6 +1003,7 @@ async function startDiscussion() {
   const payload = {
     content: question.value,
     user_name: userName.value || '用户',
+    user_id: userId.value || 'default-user',
     max_rounds: maxRounds.value,
     mode: mode.value,
   }
@@ -713,7 +1086,11 @@ async function summarize() {
     const response = await fetch(`${apiBase}/groups/${currentGroup.value.id}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instruction: '请对上述讨论提炼结论和可执行建议。' }),
+      body: JSON.stringify({
+        instruction: '请对上述讨论提炼结论和可执行建议。',
+        user_name: userName.value || '用户',
+        user_id: userId.value || 'default-user',
+      }),
     })
 
     if (!response.ok) throw new Error('总结请求失败')
@@ -994,7 +1371,6 @@ onBeforeUnmount(() => {
 }
 
 .qa-card-body {
-  white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.55;
   color: #263548;
@@ -1024,6 +1400,21 @@ onBeforeUnmount(() => {
   background: #7bb3ff;
   color: #fff;
 }
+.avatar.tone-system {
+  background: #dce2ea;
+  color: #405065;
+}
+
+.avatar.tone-summary {
+  background: #ffe8c2;
+  color: #714600;
+}
+
+.avatar.tone-member {
+  background: #dce5f5;
+  color: #344159;
+}
+
 
 .message-stack {
   max-width: min(72%, 760px);
@@ -1057,7 +1448,6 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   background: #fff;
   border: 1px solid #dce3ef;
-  white-space: pre-wrap;
   line-height: 1.55;
   word-break: break-word;
   box-shadow: 0 2px 8px rgba(20, 35, 60, 0.04);
@@ -1068,6 +1458,140 @@ onBeforeUnmount(() => {
   background: #cbe5ff;
   border-color: #9bc9ff;
 }
+
+.bubble.tone-member {
+  background: #ffffff;
+  border-color: #dce3ef;
+}
+
+.bubble.tone-summary {
+  background: #fff3da;
+  border-color: #f5d7a1;
+}
+
+.bubble.tone-system {
+  background: #eef2f7;
+  border-color: #d2dbe8;
+  color: #2f3a4d;
+}
+
+.sender-line.tone-system .sender-name {
+  color: #3a4b62;
+}
+
+.sender-line.tone-summary .sender-name {
+  color: #7a4d00;
+}
+
+.markdown-body {
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+:deep(.markdown-body p) {
+  margin: 0 0 8px;
+}
+
+:deep(.markdown-body p:last-child) {
+  margin-bottom: 0;
+}
+
+:deep(.markdown-body h1),
+:deep(.markdown-body h2),
+:deep(.markdown-body h3),
+:deep(.markdown-body h4),
+:deep(.markdown-body h5),
+:deep(.markdown-body h6) {
+  margin: 4px 0 8px;
+  line-height: 1.35;
+}
+
+:deep(.markdown-body ul),
+:deep(.markdown-body ol) {
+  margin: 0 0 8px 18px;
+  padding: 0;
+}
+
+:deep(.markdown-body li + li) {
+  margin-top: 4px;
+}
+
+:deep(.markdown-body blockquote) {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid #b9c8df;
+  background: rgba(181, 197, 220, 0.14);
+  color: #37485f;
+}
+
+:deep(.markdown-body pre) {
+  margin: 6px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f3f6fb;
+  border: 1px solid #d9e1ef;
+  overflow-x: auto;
+}
+
+:deep(.markdown-body code) {
+  font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+:deep(.markdown-body pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+:deep(.markdown-body :not(pre) > code) {
+  background: #eef3fb;
+  border: 1px solid #d7e1f1;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+:deep(.markdown-body a) {
+  color: #2f6cf6;
+  text-decoration: none;
+}
+
+:deep(.markdown-body a:hover) {
+  text-decoration: underline;
+}
+
+:deep(.markdown-body hr) {
+  border: 0;
+  border-top: 1px solid #d9e1ef;
+  margin: 10px 0;
+}
+
+:deep(.markdown-body table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  display: block;
+  overflow-x: auto;
+}
+
+:deep(.markdown-body thead) {
+  background: #ecf3ff;
+}
+
+:deep(.markdown-body th),
+:deep(.markdown-body td) {
+  border: 1px solid #d9e1ef;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  min-width: 100px;
+}
+
+:deep(.markdown-body th) {
+  font-weight: 600;
+  color: #2f3e57;
+}
+
 
 .composer-panel {
   background: #fff;
@@ -1178,6 +1702,37 @@ onBeforeUnmount(() => {
 .stats-line strong {
   display: block;
   margin-top: 4px;
+}
+
+.memory-title {
+  margin-top: 10px;
+}
+
+.stats-line.compact {
+  padding-top: 8px;
+}
+
+.memory-grid {
+  padding: 4px 12px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.memory-item {
+  border: 1px dashed #dce5f3;
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #f9fbff;
+}
+
+.memory-item span {
+  color: #60708b;
+  font-size: 12px;
 }
 
 .blank-state {
